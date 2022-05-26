@@ -7,7 +7,7 @@
 #include <TFT_eSPI.h>
 #include <SPI.h>
 
-#define USERMOD_ST7789_DISPLAY 97
+//#define USERMOD_ID_ST7789_DISPLAY 97
 
 #ifndef TFT_DISPOFF
 #define TFT_DISPOFF 0x28
@@ -17,13 +17,14 @@
 #define TFT_SLPIN   0x10
 #endif
 
-#define TFT_MOSI            21
-#define TFT_SCLK            22
-#define TFT_DC              18
-#define TFT_RST             5
-#define TFT_BL              26  // Display backlight control pin
+#define TFT_MOSI            19
+#define TFT_SCLK            18
+#define TFT_CS              5
+#define TFT_DC              16
+#define TFT_RST             23
+#define TFT_BL          4  // Display backlight control pin
 
-TFT_eSPI tft = TFT_eSPI(240, 240); // Invoke custom library
+TFT_eSPI tft = TFT_eSPI(135, 240); // Invoke custom library
 
 // How often we are redrawing screen
 #define USER_LOOP_REFRESH_RATE_MS 1000
@@ -58,7 +59,7 @@ class St7789DisplayUsermod : public Usermod {
     void setup()
     {
         tft.init();
-        tft.setRotation(0);  //Rotation here is set up for the text to be readable with the port on the left. Use 1 to flip.
+        tft.setRotation(3);  //Rotation here is set up for the text to be readable with the port on the left. Use 1 to flip.
         tft.fillScreen(TFT_BLACK);
         tft.setTextColor(TFT_RED);
         tft.setCursor(60, 100);
@@ -78,6 +79,7 @@ class St7789DisplayUsermod : public Usermod {
      */
     void connected() {
       //Serial.println("Connected to WiFi!");
+	   needRedraw = true;
     }
 
     /*
@@ -164,7 +166,7 @@ class St7789DisplayUsermod : public Usermod {
 // Second row with AP IP and Password or IP
     tft.setTextColor(TFT_GREEN);
     tft.setTextSize(2);
-    tft.setCursor(3, 64);
+    tft.setCursor(1, 24);
 // Print AP IP and password in AP mode or knownIP if AP not active.
 
     if (apActive)
@@ -172,7 +174,7 @@ class St7789DisplayUsermod : public Usermod {
     tft.setTextColor(TFT_YELLOW);
     tft.print("AP IP: ");
     tft.print(knownIp);
-    tft.setCursor(3,86);
+    tft.setCursor(1,46);
     tft.setTextColor(TFT_YELLOW);
     tft.print("AP Pass:");
     tft.print(apPass);
@@ -182,7 +184,7 @@ class St7789DisplayUsermod : public Usermod {
     tft.setTextColor(TFT_GREEN);
     tft.print("IP: ");
     tft.print(knownIp);
-    tft.setCursor(3,86);
+    tft.setCursor(1,46);
     //tft.print("Signal Strength: ");
     //tft.print(i.wifi.signal);
     tft.setTextColor(TFT_WHITE);
@@ -192,7 +194,7 @@ class St7789DisplayUsermod : public Usermod {
     }
 
 // Third row with mode name
-    tft.setCursor(3, 108);
+    tft.setCursor(1, 68);
     uint8_t qComma = 0;
     bool insideQuotes = false;
     uint8_t printedChars = 0;
@@ -223,7 +225,7 @@ class St7789DisplayUsermod : public Usermod {
     }
 // Fourth row with palette name
     tft.setTextColor(TFT_YELLOW);
-    tft.setCursor(3, 130);
+    tft.setCursor(1, 90);
     qComma = 0;
     insideQuotes = false;
     printedChars = 0;
@@ -253,7 +255,7 @@ class St7789DisplayUsermod : public Usermod {
     }
 // Fifth row with estimated mA usage
     tft.setTextColor(TFT_SILVER);
-    tft.setCursor(3, 152);
+    tft.setCursor(1, 112);
 // Print estimated milliamp usage (must specify the LED type in LED prefs for this to be a reasonable estimate).
     tft.print("Current: ");
     tft.print(strip.currentMilliamps);
@@ -342,7 +344,7 @@ class St7789DisplayUsermod : public Usermod {
      */
     uint16_t getId()
     {
-      return USERMOD_ST7789_DISPLAY;
+      return USERMOD_ID_ST7789_DISPLAY;
     }
 
    //More methods can be added in the future, this example will then be extended.

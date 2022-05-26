@@ -47,9 +47,17 @@
 #endif
 #ifdef USERMOD_FOUR_LINE_DISPLAY
   #ifdef USE_ALT_DISPlAY
+     #ifdef USE_TTGO_DISPlAY
+      #include "../usermods/usermod_v2_four_line_display_ALT_TTGO/usermod_v2_four_line_display_ALT_TTGO.h"  
+     #else
     #include "../usermods/usermod_v2_four_line_display_ALT/usermod_v2_four_line_display_ALT.h"
+    #endif
   #else
+    #ifdef USE_TTGO_DISPlAY
+      #include "../usermods/usermod_v2_four_line_display_TTGO/usermod_v2_four_line_display_TTGO.h"  
+    #else
     #include "../usermods/usermod_v2_four_line_display/usermod_v2_four_line_display.h"
+    #endif
   #endif
 #endif
 #ifdef USERMOD_ROTARY_ENCODER_UI

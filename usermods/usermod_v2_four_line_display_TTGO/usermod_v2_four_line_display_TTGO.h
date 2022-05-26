@@ -1,30 +1,12 @@
+// Credits to @mrVanboy, @gwaland and my dearest friend @westward
+// Also for @spiff72 for usermod TTGO-T-Display
+// 210217
 #pragma once
 
 #include "wled.h"
-#include <U8x8lib.h> // from https://github.com/olikraus/u8g2/
-#include "Wire.h"
-
-//
-// Insired by the v1 usermod: ssd1306_i2c_oled_u8g2
-//
-// v2 usermod for using 128x32 or 128x64 i2c
-// OLED displays to provide a four line display
-// for WLED.
-//
-// Dependencies
-// * This usermod REQURES the ModeSortUsermod
-// * This Usermod works best, by far, when coupled
-//   with RotaryEncoderUIUsermod.
-//
-// Make sure to enable NTP and set your time zone in WLED Config | Time.
-//
-// REQUIREMENT: You must add the following requirements to
-// REQUIREMENT: "lib_deps" within platformio.ini / platformio_override.ini
-// REQUIREMENT: *  U8g2  (the version already in platformio.ini is fine)
-// REQUIREMENT: *  Wire
-//
-
-//The SCL and SDA pins are defined here.
+#include <TFT_eSPI.h>
+#include <SPI.h>
+#include <WIRE.h>
 #ifdef ARDUINO_ARCH_ESP32
   #define HW_PIN_SCL 22
   #define HW_PIN_SDA 21
@@ -79,27 +61,35 @@
   #endif
 #endif
 
-#ifndef FLD_TYPE
-  #ifndef FLD_SPI_DEFAULT
-    #define FLD_TYPE SSD1306
-  #else
-    #define FLD_TYPE SSD1306_SPI
-  #endif
+//#define USERMOD_ID_ST7789_DISPLAY 97
+
+#ifndef TFT_DISPOFF
+#define TFT_DISPOFF 0x28
 #endif
 
-// When to time out to the clock or blank the screen
-// if SLEEP_MODE_ENABLED.
+#ifndef TFT_SLPIN
+#define TFT_SLPIN   0x10
+#endif
+
+#define TFT_MOSI            19
+#define TFT_SCLK            18
+#define TFT_CS              5
+#define TFT_DC              16
+#define TFT_RST             23
+
+#define TFT_BL          4  // Display backlight control pin
+
 #define SCREEN_TIMEOUT_MS  60*1000    // 1 min
 
 #define TIME_INDENT        0
 #define DATE_INDENT        2
 
+#define FLD_TYPE ST7789
 // Minimum time between redrawing screen in ms
 #define USER_LOOP_REFRESH_RATE_MS 1000
 
 // Extra char (+1) for null
-#define LINE_BUFFER_SIZE            16+1
-
+#define LINE_BUFFER_SIZE         16+1
 typedef enum {
   FLD_LINE_BRIGHTNESS = 0,
   FLD_LINE_EFFECT_SPEED,
@@ -130,20 +120,27 @@ typedef enum {
   ST7789
 } DisplayType;
 
+TFT_eSPI tft = TFT_eSPI(135, 240); // Invoke custom library
+
+// How often we are redrawing screen
+#define USER_LOOP_REFRESH_RATE_MS 1000
+
     char sliderNames[5][LINE_BUFFER_SIZE*2]; //WLEDSR
     const char sliderDefaults[5][LINE_BUFFER_SIZE] = {"FX Speed", "FX Intens.", "FX Custom1", "FX Custom2", "FX Custom3"}; //WLEDSR
 
+
+//class name. Use something descriptive and leave the ": public Usermod" part :)
 class FourLineDisplayUsermod : public Usermod {
-
   private:
-
+    //Private class members. You can declare variables and functions only accessible to your usermod here
     bool initDone = false;
     bool enabled = true;
     unsigned long lastTime = 0;
 
-    // HW interface & configuration
-    U8X8 *u8x8 = nullptr;           // pointer to U8X8 display object
-    #ifndef FLD_SPI_DEFAULT
+    // needRedraw marks if redraw is required to prevent often redrawing.
+    bool needRedraw = true;
+    uint8_t tftcharwidth = 19;  // Number of chars that fit on screen with text size set to 2
+	  #ifndef FLD_SPI_DEFAULT
     int8_t ioPin[5] = {FLD_PIN_SCL, FLD_PIN_SDA, -1, -1, -1};        // I2C pins: SCL, SDA
     uint32_t ioFrequency = 400000;  // in Hz (minimum is 100000, baseline is 400000 and maximum should be 3400000)
     #else
@@ -151,11 +148,13 @@ class FourLineDisplayUsermod : public Usermod {
     uint32_t ioFrequency = 1000000;  // in Hz (minimum is 500kHz, baseline is 1MHz and maximum should be 20MHz)
     #endif
     DisplayType type = FLD_TYPE;    // display type
+
     bool flip = false;              // flip display 180°
     uint8_t contrast = 10;          // screen contrast
     uint8_t lineHeight = 1;         // 1 row or 2 rows
     uint32_t refreshRate = USER_LOOP_REFRESH_RATE_MS; // in ms
     uint32_t screenTimeout = SCREEN_TIMEOUT_MS;       // in ms
+
     bool sleepMode = true;          // allow screen sleep?
     bool clockMode = false;         // display clock
     bool forceAutoRedraw = false;         // WLEDSR: force rotating of variables in display, even if strip.isUpdating, this can cause led stutter, this should not be necessary if display is fast enough...
@@ -201,113 +200,62 @@ class FourLineDisplayUsermod : public Usermod {
     static const char _noAutoRedraw[]; //WLEDSR
     static const char _busClkFrequency[];
 
-    // If display does not work or looks corrupted check the
-    // constructor reference:
-    // https://github.com/olikraus/u8g2/wiki/u8x8setupcpp
-    // or check the gallery:
-    // https://github.com/olikraus/u8g2/wiki/gallery
 
   public:
+    //Functions called by WLED
 
-    // gets called once at boot. Do all initialization that doesn't depend on
-    // network here
-    void setup() {
-      Wire.begin(FLD_PIN_SDA, FLD_PIN_SCL); //increase speed to run display
-      Wire.setClock(400000); // 400kHz I2C clock. Comment this line if having compilation difficulties
-
-      if (type == NONE || !enabled) return;
-
-      bool isHW;
-      PinOwner po = PinOwner::UM_FourLineDisplay;
-      if (type == SSD1306_SPI || type == SSD1306_SPI64) {
-        isHW = (ioPin[0]==HW_PIN_CLOCKSPI && ioPin[1]==HW_PIN_DATASPI);
-        PinManagerPinType pins[5] = { { ioPin[0], true }, { ioPin[1], true }, { ioPin[2], true }, { ioPin[3], true }, { ioPin[4], true }};
-        if (!pinManager.allocateMultiplePins(pins, 5, po)) { type=NONE; return; }
-      } else {
-        isHW = (ioPin[0]==HW_PIN_SCL && ioPin[1]==HW_PIN_SDA);
-        PinManagerPinType pins[2] = { { ioPin[0], true }, { ioPin[1], true } };
-        if (ioPin[0]==HW_PIN_SCL && ioPin[1]==HW_PIN_SDA) po = PinOwner::HW_I2C;  // allow multiple allocations of HW I2C bus pins
-        if (!pinManager.allocateMultiplePins(pins, 2, po)) { type=NONE; return; }
-      }
-
-      DEBUG_PRINTLN(F("Allocating display."));
-      switch (type) {
-        case SSD1306:
-          if (!isHW) u8x8 = (U8X8 *) new U8X8_SSD1306_128X32_UNIVISION_SW_I2C(ioPin[0], ioPin[1]); // SCL, SDA, reset
-          else       u8x8 = (U8X8 *) new U8X8_SSD1306_128X32_UNIVISION_HW_I2C(U8X8_PIN_NONE, ioPin[0], ioPin[1]); // Pins are Reset, SCL, SDA
-          lineHeight = 1;
-          break;
-        case SH1106:
-          if (!isHW) u8x8 = (U8X8 *) new U8X8_SH1106_128X64_WINSTAR_SW_I2C(ioPin[0], ioPin[1]); // SCL, SDA, reset
-          else       u8x8 = (U8X8 *) new U8X8_SH1106_128X64_WINSTAR_HW_I2C(U8X8_PIN_NONE, ioPin[0], ioPin[1]); // Pins are Reset, SCL, SDA
-          lineHeight = 2;
-          break;
-        case SSD1306_64:
-          if (!isHW) u8x8 = (U8X8 *) new U8X8_SSD1306_128X64_NONAME_SW_I2C(ioPin[0], ioPin[1]); // SCL, SDA, reset
-          else       u8x8 = (U8X8 *) new U8X8_SSD1306_128X64_NONAME_HW_I2C(U8X8_PIN_NONE, ioPin[0], ioPin[1]); // Pins are Reset, SCL, SDA
-          lineHeight = 2;
-          break;
-        case SSD1305:
-          if (!isHW) u8x8 = (U8X8 *) new U8X8_SSD1305_128X32_NONAME_SW_I2C(ioPin[0], ioPin[1]); // SCL, SDA, reset
-          else       u8x8 = (U8X8 *) new U8X8_SSD1305_128X32_ADAFRUIT_HW_I2C(U8X8_PIN_NONE, ioPin[0], ioPin[1]); // Pins are Reset, SCL, SDA
-          lineHeight = 1;
-          break;
-        case SSD1305_64:
-          if (!isHW) u8x8 = (U8X8 *) new U8X8_SSD1305_128X64_ADAFRUIT_SW_I2C(ioPin[0], ioPin[1]); // SCL, SDA, reset
-          else       u8x8 = (U8X8 *) new U8X8_SSD1305_128X64_ADAFRUIT_HW_I2C(U8X8_PIN_NONE, ioPin[0], ioPin[1]); // Pins are Reset, SCL, SDA
-          lineHeight = 2;
-          break;
-        case SSD1306_SPI:
-          if (!isHW)  u8x8 = (U8X8 *) new U8X8_SSD1306_128X32_UNIVISION_4W_SW_SPI(ioPin[0], ioPin[1], ioPin[2], ioPin[3], ioPin[4]);
-          else        u8x8 = (U8X8 *) new U8X8_SSD1306_128X32_UNIVISION_4W_HW_SPI(ioPin[2], ioPin[3], ioPin[4]); // Pins are cs, dc, reset
-          lineHeight = 1;
-          break;
-        case SSD1306_SPI64:
-          if (!isHW) u8x8 = (U8X8 *) new U8X8_SSD1306_128X64_NONAME_4W_SW_SPI(ioPin[0], ioPin[1], ioPin[2], ioPin[3], ioPin[4]);
-          else       u8x8 = (U8X8 *) new U8X8_SSD1306_128X64_NONAME_4W_HW_SPI(ioPin[2], ioPin[3], ioPin[4]); // Pins are cs, dc, reset
-          lineHeight = 2;
-          break;
-        case SH1106_SPI:
-          if (!(ioPin[0]==FLD_PIN_CLOCKSPI && ioPin[1]==FLD_PIN_DATASPI)) // if not overridden these sould be HW accellerated
-            u8x8 = (U8X8 *) new U8X8_SH1106_128X64_WINSTAR_4W_SW_SPI(ioPin[0], ioPin[1], ioPin[2], ioPin[3], ioPin[4]);
-          else
-                 u8x8 = (U8X8 *) new U8X8_SH1106_128X64_WINSTAR_4W_HW_SPI(ioPin[2], ioPin[3], ioPin[4]); // Pins are cs, dc, reset
-          lineHeight = 2;
-          break;
-        default:
-          u8x8 = nullptr;
-      }
-
-      if (nullptr == u8x8) {
-          DEBUG_PRINTLN(F("Display init failed."));
-          pinManager.deallocateMultiplePins((const uint8_t*)ioPin, (type == SSD1306_SPI || type == SSD1306_SPI64) ? 5 : 2, po);
-          type = NONE;
-          enabled = false;
-          return;
-      }
-
+    /*
+     * setup() is called once at boot. WiFi is not yet connected at this point.
+     * You can use it to initialize variables, sensors or similar.
+     */
+    void setup()
+    {
+        tft.init();
+        tft.setRotation(3);  //Rotation here is set up for the text to be readable with the port on the left. Use 1 to flip.
+        tft.fillScreen(TFT_BLACK);
+        tft.setTextColor(TFT_RED);
+        tft.setCursor(60, 100);
+        tft.setTextDatum(MC_DATUM);
+        tft.setTextSize(2);
+        tft.print("Loading...");
+        if (TFT_BL > 0) 
+        { // TFT_BL has been set in the TFT_eSPI library
+         pinMode(TFT_BL, OUTPUT); // Set backlight pin to output mode
+         digitalWrite(TFT_BL, HIGH); // Turn backlight on.
+        }
+		
       initDone = true;
-      DEBUG_PRINTLN(F("Starting display."));
-      /*if (!(type == SSD1306_SPI || type == SSD1306_SPI64))*/ u8x8->setBusClock(ioFrequency);  // can be used for SPI too
-      u8x8->begin();
-      setFlipMode(flip);
-      setContrast(contrast); //Contrast setup will help to preserve OLED lifetime. In case OLED need to be brighter increase number up to 255
-      setPowerSave(0);
-      drawString(0, 0, "Loading...");
     }
 
-    // gets called every time WiFi is (re-)connected. Initialize own network
-    // interfaces here
-    void connected() {}
+    /*
+     * connected() is called every time the WiFi is (re)connected
+     * Use it to initialize network interfaces
+     */
+    void connected() {
+      //Serial.println("Connected to WiFi!");
+	   needRedraw = true;
+    }
 
-    /**
-     * Da loop.
+    /*
+     * loop() is called continuously. Here you can check for events, read sensors, etc.
+     *
+     * Tips:
+     * 1. You can use "if (WLED_CONNECTED)" to check for a successful network connection.
+     *    Additionally, "if (WLED_MQTT_CONNECTED)" is available to check for a connection to an MQTT broker.
+     *
+     * 2. Try to avoid using the delay() function. NEVER use delays longer than 10 milliseconds.
+     *    Instead, use a timer check as shown here.
      */
     void loop() {
-      if (!enabled || millis() - lastUpdate < (clockMode?1000:refreshRate) || strip.isUpdating()) return;
+// Check if we time interval for redrawing passes.
+//    if (millis() - lastUpdate < USER_LOOP_REFRESH_RATE_MS)
+//        {
+//            return;
+//        }
+   if (!enabled || millis() - lastUpdate < (clockMode?1000:refreshRate) || strip.isUpdating()) return;
       lastUpdate = millis();
 
-      // WWLEDSR: redraw if
+        // WWLEDSR: redraw if
       //      -- timer and (forcedAutoUpdate or strip idle) and autoRedraw
       //   OR
       //      -- any variable updated (including clockmode, hours and minutes)
@@ -317,50 +265,79 @@ class FourLineDisplayUsermod : public Usermod {
       if ( ((forceAutoRedraw || !strip.isUpdating()) && !noAutoRedraw) || checkChangedType() != FLD_LINE_NULL || (sleepMode && (millis() - lastRedraw > screenTimeout)))
         redraw(false);
     }
-
-    /**
+     /**
      * Wrappers for screen drawing
      */
     void setFlipMode(uint8_t mode) {
       if (type == NONE || !enabled) return;
-      u8x8->setFlipMode(mode);
+  // DAA //    u8x8->setFlipMode(mode);
     }
     void setContrast(uint8_t contrast) {
       if (type == NONE || !enabled) return;
-      u8x8->setContrast(contrast);
+    // DAA //     u8x8->setContrast(contrast);
     }
     void drawString(uint8_t col, uint8_t row, const char *string, bool ignoreLH=false) {
       if (type == NONE || !enabled) return;
-      u8x8->setFont(u8x8_font_chroma48medium8_r);
-      if (!ignoreLH && lineHeight==2) u8x8->draw1x2String(col, row, string);
-      else                            u8x8->drawString(col, row, string);
+    // DAA //     u8x8->setFont(u8x8_font_chroma48medium8_r);
+      if (!ignoreLH && lineHeight==2)   // DAA // u8x8->draw1x2String(col, row, string)
+          {
+          tft.setTextSize(3);
+          tft.setTextPadding(200);
+          tft.setCursor(col*16, row*25);
+          tft.print(string);
+        } 
+      else                              // DAA // u8x8->drawString(col, row, string)
+        {
+          tft.setTextSize(2);
+          tft.setTextPadding(200);
+          tft.setCursor(col*16, row*25);
+          tft.print(string);
+        } 
     }
     void draw2x2String(uint8_t col, uint8_t row, const char *string) {
       if (type == NONE || !enabled) return;
-      u8x8->setFont(u8x8_font_chroma48medium8_r);
-      u8x8->draw2x2String(col, row, string);
-    }
-    void drawGlyph(uint8_t col, uint8_t row, char glyph, const uint8_t *font, bool ignoreLH=false) {
+    // DAA //     u8x8->setFont(u8x8_font_chroma48medium8_r);
+     // DAA //    u8x8->draw2x2String(col, row, string);
+          tft.setTextSize(3);
+          tft.setTextPadding(200);
+          tft.setCursor(col*16, row*25);
+          tft.print(string);
+        } 
+
+    void drawGlyph(uint8_t col, uint8_t row, char glyph,  uint8_t font, bool ignoreLH=false) {
       if (type == NONE || !enabled) return;
-      u8x8->setFont(font);
-      if (!ignoreLH && lineHeight==2) u8x8->draw1x2Glyph(col, row, glyph);
-      else                            u8x8->drawGlyph(col, row, glyph);
+     // DAA //    u8x8->setFont(font);
+	     tft.setTextFont(  font);
+      if (!ignoreLH && lineHeight==2)   // DAA //  u8x8->draw1x2Glyph(col, row, glyph)
+         tft.drawChar(col,row,glyph);
+      else 
+         tft.drawChar(col,row,glyph);		  // DAA // u8x8->drawGlyph(col, row, glyph)
+      ;
     }
     uint8_t getCols() {
       if (type==NONE || !enabled) return 0;
-      return u8x8->getCols();
+        return  16; // DAA // u8x8->getCols();
     }
     void clear() {
       if (type == NONE || !enabled) return;
-      u8x8->clear();
+          tft.fillScreen(TFT_BLACK);
+
+     // DAA //    u8x8->clear();
     }
     void setPowerSave(uint8_t save) {
       if (type == NONE || !enabled) return;
-      u8x8->setPowerSave(save);
+        if (save)
+               digitalWrite(TFT_BL, LOW); // Turn backlight on.
+        else
+               digitalWrite(TFT_BL, TFT_BACKLIGHT_ON); // Turn backlight on.
+
+ 
     }
 
-    //WLEDSR: move check to function to reuse code
-    Line4Type checkChangedType() {
+
+
+
+	    Line4Type checkChangedType() {
       if (((apActive) ? String(apSSID) : WiFi.SSID()) != knownSsid)
         return FLD_LINE_OTHER;
       else if (knownIp != (apActive ? IPAddress(4, 3, 2, 1) : Network.localIP()))
@@ -391,7 +368,7 @@ class FourLineDisplayUsermod : public Usermod {
         return FLD_LINE_NULL;
     }
 
-    void center(String &line, uint8_t width) {
+	    void center(String &line, uint8_t width) {
       bool tooLong = line.length()>width;
       line = line.substring(0, width);
       int len = line.length();
@@ -401,16 +378,12 @@ class FourLineDisplayUsermod : public Usermod {
       if (tooLong)
          line[len-1] = '~';
     }
-
-    /**
-     * Redraw the screen (but only if things have changed
-     * or if forceRedraw).
-     */
-    void redraw(bool forceRedraw) {
+	
+	    void redraw(bool forceRedraw) {
       static bool showName = false;
       unsigned long now = millis();
 
-      if (type == NONE || !enabled) return;
+      if (!enabled) return;
       if (overlayUntil > 0) {
         if (now >= overlayUntil) {
           // Time to display the overlay has elapsed.
@@ -526,9 +499,10 @@ class FourLineDisplayUsermod : public Usermod {
       knownClockMode = clockMode;
 
       // Do the actual drawing
+	  clear();
       String line;
       // First row with Wifi name
-      drawGlyph(0, 0, 80, u8x8_font_open_iconic_embedded_1x1); // home icon
+      // DAA //drawGlyph(0, 0, 80, u8x8_font_open_iconic_embedded_1x1); // home icon
       line = knownSsid;
       center(line, getCols()-1);
       drawString(1, 0, line.c_str());
@@ -538,7 +512,7 @@ class FourLineDisplayUsermod : public Usermod {
       }
 
       // Second row with IP or Psssword
-      drawGlyph(0, lineHeight, 68, u8x8_font_open_iconic_embedded_1x1); // wifi icon
+      // DAA //drawGlyph(0, lineHeight, 68, u8x8_font_open_iconic_embedded_1x1); // wifi icon
       // Print password in AP mode and if led is OFF.
       if (apActive && bri == 0) {
         drawString(1, lineHeight, apPass);
@@ -553,54 +527,54 @@ class FourLineDisplayUsermod : public Usermod {
       }
 
       // draw third and fourth row
-      drawLine(2, clockMode ? lineType : FLD_LINE_MODE);
-      drawLine(3, clockMode ? FLD_LINE_TIME : lineType);
+      drawLine(3, clockMode ? lineType : FLD_LINE_MODE);
+      drawLine(4, clockMode ? FLD_LINE_TIME : lineType);
 
       //WLEDSR: Show icon per variable
       if (clockMode)
-        drawGlyph(0, 3*lineHeight, 65, u8x8_font_open_iconic_embedded_1x1); // clock icon
+        drawGlyph(0, 3*lineHeight, 65,2);//, u8x8_font_open_iconic_embedded_1x1); // clock icon
       //else done in showCurrentEffectOrPalette
 
       switch (lineType) {
         case FLD_LINE_BRIGHTNESS:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 66 + (bri > 0 ? 3 : 0), u8x8_font_open_iconic_weather_1x1); // sun/moon icon
+        drawGlyph(0, (clockMode?2:3)*lineHeight, 66 + (bri > 0 ? 3 : 0), 2); // sun/moon icon
           break;
         case FLD_LINE_MODE: //nothing displayed as this is done in showCurrentEffectOrPalette
           break;
         case FLD_LINE_PALETTE: //nothing displayed as this is done in showCurrentEffectOrPalette
           break;
         case FLD_LINE_EFFECT_SPEED:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 72, u8x8_font_open_iconic_play_1x1); // fast forward icon
+        // DAA //  drawGlyph(0, (clockMode?2:3)*lineHeight, 72, u8x8_font_open_iconic_play_1x1); // fast forward icon
           break;
         case FLD_LINE_EFFECT_INTENSITY:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 78, u8x8_font_open_iconic_thing_1x1); // kind of fire icon
+        // DAA //  drawGlyph(0, (clockMode?2:3)*lineHeight, 78, u8x8_font_open_iconic_thing_1x1); // kind of fire icon
           break;
         case FLD_LINE_EFFECT_CUSTOM1:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 68, u8x8_font_open_iconic_weather_1x1); // star icon
+         // DAA // drawGlyph(0, (clockMode?2:3)*lineHeight, 68, u8x8_font_open_iconic_weather_1x1); // star icon
           break;
         case FLD_LINE_EFFECT_CUSTOM2:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 68, u8x8_font_open_iconic_weather_1x1); // star icon
+        // DAA //  drawGlyph(0, (clockMode?2:3)*lineHeight, 68, u8x8_font_open_iconic_weather_1x1); // star icon
           break;
         case FLD_LINE_EFFECT_CUSTOM3:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 68, u8x8_font_open_iconic_weather_1x1); // star icon
+        // DAA //  drawGlyph(0, (clockMode?2:3)*lineHeight, 68, u8x8_font_open_iconic_weather_1x1); // star icon
           break;
         case FLD_LINE_PRESET:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 88, u8x8_font_open_iconic_arrow_1x1); // circle like icon
+        // DAA //  drawGlyph(0, (clockMode?2:3)*lineHeight, 88, u8x8_font_open_iconic_arrow_1x1); // circle like icon
           break;
         case FLD_LINE_TIME:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 65, u8x8_font_open_iconic_embedded_1x1); //  clock icon
+        // DAA //  drawGlyph(0, (clockMode?2:3)*lineHeight, 65, u8x8_font_open_iconic_embedded_1x1); //  clock icon
           break;
         case FLD_LINE_SQUELCH:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 65, u8x8_font_open_iconic_embedded_1x1); //  clock icon
+        // DAA //  drawGlyph(0, (clockMode?2:3)*lineHeight, 65, u8x8_font_open_iconic_embedded_1x1); //  clock icon
           break;
         case FLD_LINE_GAIN:
-          drawGlyph(0, (clockMode?2:3)*lineHeight, 65, u8x8_font_open_iconic_embedded_1x1); //  clock icon
+        // DAA //  drawGlyph(0, (clockMode?2:3)*lineHeight, 65, u8x8_font_open_iconic_embedded_1x1); //  clock icon
           break;
         default:
-        //   drawGlyph(0, (clockMode?2:3)*lineHeight, 72, u8x8_font_open_iconic_play_1x1); //  icon
+           drawGlyph(0, (clockMode?2:3)*lineHeight, 72, 2); //  icon
           break;
       }
-      //if (markLineNum>1) drawGlyph(2, markLineNum*lineHeight, 66, u8x8_font_open_iconic_arrow_1x1); // arrow icon
+      if (markLineNum>1) drawGlyph(2, markLineNum*lineHeight, 66, 2); // arrow icon
     }
 
     //WLEDSR: Use custom slidernames
@@ -771,12 +745,15 @@ class FourLineDisplayUsermod : public Usermod {
       //WLEDSR: Add effect or palette icon
       if (isEffect) {
         if (noteFound)
-          drawGlyph(0, row*lineHeight, 77, u8x8_font_open_iconic_play_1x1); // note effect
+     // DAA //        drawGlyph(0, row*lineHeight, 77, u8x8_font_open_iconic_play_1x1)
+     ; // note effect
         else
-          drawGlyph(0, row*lineHeight, 70, u8x8_font_open_iconic_thing_1x1); // normal effect
+      // DAA //       drawGlyph(0, row*lineHeight, 70, u8x8_font_open_iconic_thing_1x1)
+      ; // normal effect
       }
       else {
-        drawGlyph(0, row*lineHeight, 72, u8x8_font_open_iconic_thing_1x1); // pallette
+      // DAA //     drawGlyph(0, row*lineHeight, 72, u8x8_font_open_iconic_thing_1x1)
+      ; // pallette
       }
     }
 
@@ -830,6 +807,8 @@ class FourLineDisplayUsermod : public Usermod {
       overlayUntil = millis() + showHowLong;
     }
 
+
+   
     void setLineType(byte lT) {
       lineType = (Line4Type) lT;
     }
@@ -921,6 +900,8 @@ class FourLineDisplayUsermod : public Usermod {
       }
     }
 
+
+	
     /*
      * addToJsonInfo() can be used to add custom entries to the /json/info part of the JSON API.
      * Creating an "u" object allows you to add custom key/value pairs to the Info section of the WLED web UI.
@@ -965,9 +946,9 @@ class FourLineDisplayUsermod : public Usermod {
     void addToConfig(JsonObject& root) {
       JsonObject top   = root.createNestedObject(FPSTR(_name));
       top[FPSTR(_enabled)]       = enabled;
-      JsonArray io_pin = top.createNestedArray("pin");
-      for (byte i=0; i<5; i++) io_pin.add(ioPin[i]);
-      top["help4Pins"]           = F("Clk,Data,CS,DC,RST"); // help for Settings page
+//  DAA  //      JsonArray io_pin = top.createNestedArray("pin");
+//  DAA  //      for (byte i=0; i<5; i++) io_pin.add(ioPin[i]);
+//  DAA  //       top["help4Pins"]           = F("Clk,Data,CS,DC,RST"); // help for Settings page
       top["type"]                = type;
       top["help4Type"]           = F("1=SSD1306,2=SH1106,3=SSD1306_128x64,4=SSD1305,5=SSD1305_128x64,6=SSD1306_SPI,7=SSD1306_SPI_128x64"); // help for Settings page
       top[FPSTR(_flip)]          = (bool) flip;
@@ -993,7 +974,7 @@ class FourLineDisplayUsermod : public Usermod {
     bool readFromConfig(JsonObject& root) {
       bool needsRedraw    = false;
       DisplayType newType = type;
-      int8_t newPin[5]; for (byte i=0; i<5; i++) newPin[i] = ioPin[i];
+ //  DAA  //      int8_t newPin[5]; for (byte i=0; i<5; i++) newPin[i] = ioPin[i];
 
       JsonObject top = root[FPSTR(_name)];
       if (top.isNull()) {
@@ -1004,7 +985,7 @@ class FourLineDisplayUsermod : public Usermod {
 
       enabled       = top[FPSTR(_enabled)] | enabled;
       newType       = top["type"] | newType;
-      for (byte i=0; i<5; i++) newPin[i] = top["pin"][i] | ioPin[i];
+//  DAA  //       for (byte i=0; i<5; i++) newPin[i] = top["pin"][i] | ioPin[i];
       flip          = top[FPSTR(_flip)] | flip;
       contrast      = top[FPSTR(_contrast)] | contrast;
       refreshRate   = (top[FPSTR(_refreshRate)] | refreshRate/1000) * 1000;
@@ -1022,34 +1003,34 @@ class FourLineDisplayUsermod : public Usermod {
       DEBUG_PRINT(FPSTR(_name));
       if (!initDone) {
         // first run: reading from cfg.json
-        for (byte i=0; i<5; i++) ioPin[i] = newPin[i];
+ //  DAA  //        for (byte i=0; i<5; i++) ioPin[i] = newPin[i];
         type = newType;
         DEBUG_PRINTLN(F(" config loaded."));
       } else {
         DEBUG_PRINTLN(F(" config (re)loaded."));
         // changing parameters from settings page
         bool pinsChanged = false;
-        for (byte i=0; i<5; i++) if (ioPin[i] != newPin[i]) { pinsChanged = true; break; }
+//  DAA  //         for (byte i=0; i<5; i++) if (ioPin[i] != newPin[i]) { pinsChanged = true; break; }
         if (pinsChanged || type!=newType) {
-          if (type != NONE) delete u8x8;
-          PinOwner po = PinOwner::UM_FourLineDisplay;
-          if (ioPin[0]==HW_PIN_SCL && ioPin[1]==HW_PIN_SDA) po = PinOwner::HW_I2C;  // allow multiple allocations of HW I2C bus pins
-          pinManager.deallocateMultiplePins((const uint8_t *)ioPin, (type == SSD1306_SPI || type == SSD1306_SPI64) ? 5 : 2, po);
-          for (byte i=0; i<5; i++) ioPin[i] = newPin[i];
-          if (ioPin[0]<0 || ioPin[1]<0) { // data & clock must be > -1
-            type = NONE;
-            enabled = false;
-            return true;
-          } else type = newType;
+   // DAA //          if (type != NONE) delete u8x8;
+ //  DAA  //          PinOwner po = PinOwner::UM_FourLineDisplay;
+ //  DAA  //          if (ioPin[0]==HW_PIN_SCL && ioPin[1]==HW_PIN_SDA) po = PinOwner::HW_I2C;  // allow multiple allocations of HW I2C bus pins
+ //  DAA  //         pinManager.deallocateMultiplePins((const uint8_t *)ioPin, (type == SSD1306_SPI || type == SSD1306_SPI64) ? 5 : 2, po);
+ //  DAA  //          for (byte i=0; i<5; i++) ioPin[i] = newPin[i];
+ //  DAA  //          if (ioPin[0]<0 || ioPin[1]<0) { // data & clock must be > -1
+ //  DAA  //            type = NONE;
+ //  DAA  //            enabled = false;
+  //  DAA  //           return true;
+ //  DAA  //          } else type = newType;
           setup();
           needsRedraw |= true;
         }
-        if (!(type == SSD1306_SPI || type == SSD1306_SPI64)) u8x8->setBusClock(ioFrequency); // can be used for SPI too
+   // DAA //        if (!(type == SSD1306_SPI || type == SSD1306_SPI64)) u8x8->setBusClock(ioFrequency); // can be used for SPI too
         setContrast(contrast);
         setFlipMode(flip);
         if (needsRedraw && !wakeDisplay()) redraw(true);
       }
-      // use "return !top["newestParameter"].isNull();" when updating Usermod with new features (or return false during development)
+      // use "return !top["newestParameter"].isNull();" when updating Usermod with new features
       return !top[FPSTR(_enabled)].isNull();
     }
 
@@ -1061,6 +1042,7 @@ class FourLineDisplayUsermod : public Usermod {
       return USERMOD_ID_FOUR_LINE_DISP;
     }
 };
+
 
 // strings to reduce flash memory usage (used more than twice)
 const char FourLineDisplayUsermod::_name[]            PROGMEM = "4LineDisplay";
@@ -1074,3 +1056,258 @@ const char FourLineDisplayUsermod::_clockMode[]       PROGMEM = "clockMode";
 const char FourLineDisplayUsermod::_forceAutoRedraw[] PROGMEM = "forceAutoRedraw (spi)";
 const char FourLineDisplayUsermod::_noAutoRedraw[]    PROGMEM = "noAutoRedraw (i2c)";
 const char FourLineDisplayUsermod::_busClkFrequency[] PROGMEM = "i2c-freq-kHz";
+
+//  DAA  //// Turn off display after 5 minutes with no change.
+//  DAA  //    if(!displayTurnedOff && millis() - lastRedraw > 5*60*1000)
+//  DAA  //        {
+//  DAA  //            digitalWrite(TFT_BL, LOW); // Turn backlight off. 
+//  DAA  //            displayTurnedOff = true;
+//  DAA  //        } 
+//  DAA  //
+//  DAA  //// Check if values which are shown on display changed from the last time.
+//  DAA  //    if (((apActive) ? String(apSSID) : WiFi.SSID()) != knownSsid)
+//  DAA  //    {
+//  DAA  //    needRedraw = true;
+//  DAA  //    }
+//  DAA  //    else if (knownIp != (apActive ? IPAddress(4, 3, 2, 1) : WiFi.localIP()))
+//  DAA  //    {
+//  DAA  //    needRedraw = true;
+//  DAA  //    }
+//  DAA  //    else if (knownBrightness != bri)
+//  DAA  //    {
+//  DAA  //    needRedraw = true;
+//  DAA  //    }
+//  DAA  //    else if (knownMode != strip.getMainSegment().mode)
+//  DAA  //    {
+//  DAA  //    needRedraw = true;
+//  DAA  //    }
+//  DAA  //    else if (knownPalette != strip.getMainSegment().palette)
+//  DAA  //    {
+//  DAA  //    needRedraw = true;
+//  DAA  //    }
+//  DAA  //
+//  DAA  //    if (!needRedraw)
+//  DAA  //    {
+//  DAA  //    return;
+//  DAA  //    }
+//  DAA  //    needRedraw = false;
+//  DAA  //  
+//  DAA  //    if (displayTurnedOff)
+//  DAA  //    {
+//  DAA  //        digitalWrite(TFT_BL, TFT_BACKLIGHT_ON); // Turn backlight on.
+//  DAA  //        displayTurnedOff = false;
+//  DAA  //    }
+//  DAA  //    lastRedraw = millis();
+//  DAA  //
+//  DAA  //// Update last known values.
+//  DAA  //    #if defined(ESP8266)
+//  DAA  //        knownSsid = apActive ? WiFi.softAPSSID() : WiFi.SSID();
+//  DAA  //    #else
+//  DAA  //        knownSsid = WiFi.SSID();
+//  DAA  //    #endif
+//  DAA  //    knownIp = apActive ? IPAddress(4, 3, 2, 1) : WiFi.localIP();
+//  DAA  //    knownBrightness = bri;
+//  DAA  //  knownMode = strip.getMainSegment().mode;
+//  DAA  //  knownPalette = strip.getMainSegment().palette;
+//  DAA  //
+//  DAA  //    tft.fillScreen(TFT_BLACK);
+//  DAA  //    tft.setTextSize(2);
+//  DAA  //// First row with Wifi name
+//  DAA  //    tft.setTextColor(TFT_SILVER);
+//  DAA  //    tft.setCursor(3, 40);
+//  DAA  //    tft.print(knownSsid.substring(0, tftcharwidth > 1 ? tftcharwidth - 1 : 0));
+//  DAA  //// Print `~` char to indicate that SSID is longer, than our dicplay
+//  DAA  //    if (knownSsid.length() > tftcharwidth)
+//  DAA  //        tft.print("~");
+//  DAA  //
+//  DAA  //// Second row with AP IP and Password or IP
+//  DAA  //    tft.setTextColor(TFT_GREEN);
+//  DAA  //    tft.setTextSize(2);
+//  DAA  //    tft.setCursor(1, 24);
+//  DAA  //// Print AP IP and password in AP mode or knownIP if AP not active.
+//  DAA  //
+//  DAA  //    if (apActive)
+//  DAA  //    {
+//  DAA  //    tft.setTextColor(TFT_YELLOW);
+//  DAA  //    tft.print("AP IP: ");
+//  DAA  //    tft.print(knownIp);
+//  DAA  //    tft.setCursor(1,46);
+//  DAA  //    tft.setTextColor(TFT_YELLOW);
+//  DAA  //    tft.print("AP Pass:");
+//  DAA  //    tft.print(apPass);
+//  DAA  //    }
+//  DAA  //    else
+//  DAA  //    {
+//  DAA  //    tft.setTextColor(TFT_GREEN);
+//  DAA  //    tft.print("IP: ");
+//  DAA  //    tft.print(knownIp);
+//  DAA  //    tft.setCursor(1,46);
+//  DAA  //    //tft.print("Signal Strength: ");
+//  DAA  //    //tft.print(i.wifi.signal);
+//  DAA  //    tft.setTextColor(TFT_WHITE);
+//  DAA  //    tft.print("Bri: ");
+//  DAA  //    tft.print(((float(bri)/255)*100),0);
+//  DAA  //    tft.print("%");
+//  DAA  //    }
+//  DAA  //
+//  DAA  //// Third row with mode name
+//  DAA  //    tft.setCursor(1, 68);
+//  DAA  //    uint8_t qComma = 0;
+//  DAA  //    bool insideQuotes = false;
+//  DAA  //    uint8_t printedChars = 0;
+//  DAA  //    char singleJsonSymbol;
+//  DAA  //// Find the mode name in JSON
+//  DAA  //    for (size_t i = 0; i < strlen_P(JSON_mode_names); i++)
+//  DAA  //    {
+//  DAA  //        singleJsonSymbol = pgm_read_byte_near(JSON_mode_names + i);
+//  DAA  //        switch (singleJsonSymbol)
+//  DAA  //        {
+//  DAA  //            case '"':
+//  DAA  //            insideQuotes = !insideQuotes;
+//  DAA  //        break;
+//  DAA  //        case '[':
+//  DAA  //        case ']':
+//  DAA  //        break;
+//  DAA  //        case ',':
+//  DAA  //        qComma++;
+//  DAA  //        default:
+//  DAA  //            if (!insideQuotes || (qComma != knownMode))
+//  DAA  //            break;
+//  DAA  //        tft.setTextColor(TFT_MAGENTA);
+//  DAA  //        tft.print(singleJsonSymbol);
+//  DAA  //        printedChars++;
+//  DAA  //        }
+//  DAA  //    if ((qComma > knownMode) || (printedChars > tftcharwidth - 1))
+//  DAA  //      break;
+//  DAA  //    }
+//  DAA  //// Fourth row with palette name
+//  DAA  //    tft.setTextColor(TFT_YELLOW);
+//  DAA  //    tft.setCursor(1, 90);
+//  DAA  //    qComma = 0;
+//  DAA  //    insideQuotes = false;
+//  DAA  //    printedChars = 0;
+//  DAA  //// Looking for palette name in JSON.
+//  DAA  //    for (size_t i = 0; i < strlen_P(JSON_palette_names); i++)
+//  DAA  //    {
+//  DAA  //    singleJsonSymbol = pgm_read_byte_near(JSON_palette_names + i);
+//  DAA  //        switch (singleJsonSymbol)
+//  DAA  //        {
+//  DAA  //        case '"':
+//  DAA  //        insideQuotes = !insideQuotes;
+//  DAA  //        break;
+//  DAA  //        case '[':
+//  DAA  //        case ']':
+//  DAA  //        break;
+//  DAA  //        case ',':
+//  DAA  //        qComma++;
+//  DAA  //        default:
+//  DAA  //            if (!insideQuotes || (qComma != knownPalette))
+//  DAA  //            break;
+//  DAA  //        tft.print(singleJsonSymbol);
+//  DAA  //        printedChars++;
+//  DAA  //        }
+//  DAA  //// The following is modified from the code from the u8g2/u8g8 based code (knownPalette was knownMode)
+//  DAA  //    if ((qComma > knownPalette) || (printedChars > tftcharwidth - 1))
+//  DAA  //      break;
+//  DAA  //    }
+//  DAA  //// Fifth row with estimated mA usage
+//  DAA  //    tft.setTextColor(TFT_SILVER);
+//  DAA  //    tft.setCursor(1, 112);
+//  DAA  //// Print estimated milliamp usage (must specify the LED type in LED prefs for this to be a reasonable estimate).
+//  DAA  //    tft.print("Current: ");
+//  DAA  //    tft.print(strip.currentMilliamps);
+//  DAA  //    tft.print("mA");
+//  DAA  //    }
+//  DAA  //    /*
+//  DAA  //     * addToJsonInfo() can be used to add custom entries to the /json/info part of the JSON API.
+//  DAA  //     * Creating an "u" object allows you to add custom key/value pairs to the Info section of the WLED web UI.
+//  DAA  //     * Below it is shown how this could be used for e.g. a light sensor
+//  DAA  //     */
+//  DAA  //    /*
+//  DAA  //    void addToJsonInfo(JsonObject& root)
+//  DAA  //    {
+//  DAA  //      int reading = 20;
+//  DAA  //      //this code adds "u":{"Light":[20," lux"]} to the info object
+//  DAA  //      JsonObject user = root["u"];
+//  DAA  //      if (user.isNull()) user = root.createNestedObject("u");
+//  DAA  //
+//  DAA  //      JsonArray lightArr = user.createNestedArray("Light"); //name
+//  DAA  //      lightArr.add(reading); //value
+//  DAA  //      lightArr.add(" lux"); //unit
+//  DAA  //    }
+//  DAA  //    */
+//  DAA  //
+//  DAA  //
+//  DAA  //    /*
+//  DAA  //     * addToJsonState() can be used to add custom entries to the /json/state part of the JSON API (state object).
+//  DAA  //     * Values in the state object may be modified by connected clients
+//  DAA  //     */
+//  DAA  //    void addToJsonState(JsonObject& root)
+//  DAA  //    {
+//  DAA  //      //root["user0"] = userVar0;
+//  DAA  //    }
+//  DAA  //
+//  DAA  //
+//  DAA  //    /*
+//  DAA  //     * readFromJsonState() can be used to receive data clients send to the /json/state part of the JSON API (state object).
+//  DAA  //     * Values in the state object may be modified by connected clients
+//  DAA  //     */
+//  DAA  //    void readFromJsonState(JsonObject& root)
+//  DAA  //    {
+//  DAA  //      userVar0 = root["user0"] | userVar0; //if "user0" key exists in JSON, update, else keep old value
+//  DAA  //      //if (root["bri"] == 255) Serial.println(F("Don't burn down your garage!"));
+//  DAA  //    }
+//  DAA  //
+//  DAA  //
+//  DAA  //    /*
+//  DAA  //     * addToConfig() can be used to add custom persistent settings to the cfg.json file in the "um" (usermod) object.
+//  DAA  //     * It will be called by WLED when settings are actually saved (for example, LED settings are saved)
+//  DAA  //     * If you want to force saving the current state, use serializeConfig() in your loop().
+//  DAA  //     *
+//  DAA  //     * CAUTION: serializeConfig() will initiate a filesystem write operation.
+//  DAA  //     * It might cause the LEDs to stutter and will cause flash wear if called too often.
+//  DAA  //     * Use it sparingly and always in the loop, never in network callbacks!
+//  DAA  //     *
+//  DAA  //     * addToConfig() will also not yet add your setting to one of the settings pages automatically.
+//  DAA  //     * To make that work you still have to add the setting to the HTML, xml.cpp and set.cpp manually.
+//  DAA  //     *
+//  DAA  //     * I highly recommend checking out the basics of ArduinoJson serialization and deserialization in order to use custom settings!
+//  DAA  //     */
+//  DAA  //    void addToConfig(JsonObject& root)
+//  DAA  //    {
+//  DAA  //      JsonObject top = root.createNestedObject("exampleUsermod");
+//  DAA  //      top["great"] = userVar0; //save this var persistently whenever settings are saved
+//  DAA  //    }
+//  DAA  //
+//  DAA  //
+//  DAA  //    /*
+//  DAA  //     * readFromConfig() can be used to read back the custom settings you added with addToConfig().
+//  DAA  //     * This is called by WLED when settings are loaded (currently this only happens once immediately after boot)
+//  DAA  //     *
+//  DAA  //     * readFromConfig() is called BEFORE setup(). This means you can use your persistent values in setup() (e.g. pin assignments, buffer sizes),
+//  DAA  //     * but also that if you want to write persistent values to a dynamic buffer, you'd need to allocate it here instead of in setup.
+//  DAA  //     * If you don't know what that is, don't fret. It most likely doesn't affect your use case :)
+//  DAA  //     */
+//  DAA  //    bool readFromConfig(JsonObject& root)
+//  DAA  //    {
+//  DAA  //      JsonObject top = root["top"];
+//  DAA  //      bool configComplete = !top.isNull();
+//  DAA  //
+//  DAA  //      configComplete &= getJsonValue(top["great"], userVar0);
+//  DAA  //
+//  DAA  //      return configComplete;
+//  DAA  //    }
+//  DAA  //
+//  DAA  //
+//  DAA  //    /*
+//  DAA  //     * getId() allows you to optionally give your V2 usermod an unique ID (please define it in const.h!).
+//  DAA  //     * This could be used in the future for the system to determine whether your usermod is installed.
+//  DAA  //     */
+//  DAA  //    uint16_t getId()
+//  DAA  //    {
+//  DAA  //      return USERMOD_ID_ST7789_DISPLAY;
+//  DAA  //    }
+//  DAA  //
+//  DAA  //   //More methods can be added in the future, this example will then be extended.
+//  DAA  //   //Your usermod will remain compatible as it does not need to implement all methods from the Usermod base class!
+//  DAA  //};
